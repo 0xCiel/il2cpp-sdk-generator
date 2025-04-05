@@ -1,5 +1,6 @@
 #include <iostream>
 #include <fstream>
+#include <regex>
 #include <string>
 #include <vector>
 #include <map>
@@ -172,11 +173,74 @@
 #define ASSEMBLYREF_DISABLEJITCOMPILE_OPTIMIZER_FLAG 0x00004000
 #pragma endregion IL2CPP_Defines
 
+class BeeByteDeobfuscator {
+private:
+    std::unordered_map<std::string, std::string> m_classMap;
+    std::unordered_map<std::string, std::string> m_fieldMap;
+    std::unordered_map<std::string, std::string> m_methodMap;
+    int m_classCount = 0;
+    int m_fieldCount = 0;
+    int m_methodCount = 0;
+    std::regex m_nameRegex{ "[a-zA-Z0-9_]+" };
+
+public:
+    std::string DeobfuscateClass(const std::string& name) {
+        if (std::regex_match(name, m_nameRegex)) {
+            return name;
+        }
+
+        auto it = m_classMap.find(name);
+        if (it != m_classMap.end()) {
+            return it->second;
+        }
+
+        std::string newName = "Class" + std::to_string(m_classCount++);
+        m_classMap[name] = newName;
+        return newName;
+    }
+
+    std::string DeobfuscateField(const std::string& name) {
+        if (std::regex_match(name, m_nameRegex)) {
+            return name;
+        }
+
+        auto it = m_fieldMap.find(name);
+        if (it != m_fieldMap.end()) {
+            return it->second;
+        }
+
+        std::string newName = "Field" + std::to_string(m_fieldCount++);
+        m_fieldMap[name] = newName;
+        return newName;
+    }
+
+    std::string DeobfuscateMethod(const std::string& name) {
+        if (std::regex_match(name, m_nameRegex)) {
+            return name;
+        }
+
+        auto it = m_methodMap.find(name);
+        if (it != m_methodMap.end()) {
+            return it->second;
+        }
+
+        std::string newName = "Method" + std::to_string(m_methodCount++);
+        m_methodMap[name] = newName;
+        return newName;
+    }
+
+    void PrintStats() const {
+        std::cout << "[Deobfuscator] Renamed " << m_classMap.size() << " classes, "
+            << m_fieldMap.size() << " fields, " << m_methodMap.size() << " methods\n";
+    }
+};
+
+
+
 class IL2CPPConverter {
 public:
     IL2CPPConverter(const std::string& inputPath, const std::string& outputPath)
         : m_inputPath(inputPath), m_outputPath(outputPath) {
-        // Ensure output path ends with separator
         if (!m_outputPath.empty() &&
             m_outputPath.back() != PATH_SEPARATOR[0]) {
             m_outputPath += PATH_SEPARATOR;
@@ -267,6 +331,7 @@ private:
     std::string m_outputPath;
     std::vector<ClassInfo> m_classes;
     std::map<std::string, std::vector<std::string>> m_namespaces;
+    BeeByteDeobfuscator m_deobfuscator;
     bool ValidatePaths() {
         std::ifstream testFile(m_inputPath);
         if (!testFile.good()) {
@@ -568,6 +633,7 @@ private:
         sdkHeader << "// Source: " << m_inputPath << "\n";
         sdkHeader << "// Total classes: " << m_classes.size() << "\n\n";
         int generatedClasses = 0;
+
         for (const auto& cls : m_classes) {
             if (GenerateClassHeader(cls, timestamp)) {
                 generatedClasses++;
@@ -613,7 +679,7 @@ private:
                 << ((float)generatedClasses / m_classes.size() * 100) << "%\n";
             report.close();
         }
-
+        m_deobfuscator.PrintStats();
         std::cout << "\n[SUCCESS] SDK generation completed!\n";
         std::cout << "Timestamp: " << timestamp << "\n";
         std::cout << "Processed " << m_classes.size() << " classes in "
@@ -719,27 +785,19 @@ typedef struct Il2CppObject {
         return true;
     }
     bool GenerateClassHeader(const ClassInfo& cls, const std::string& timestamp) {
-        std::string headerName = SanitizeIdentifier(cls.name) + ".hpp";
+        std::string headerName = m_deobfuscator.DeobfuscateClass(cls.name) + ".hpp";
         std::string headerPath = m_outputPath + "include" + PATH_SEPARATOR + headerName;
-        std::ofstream header(headerPath);
-        if (!header.is_open()) {
-            return false;
-        }
-        size_t staticMethodCount = 0;
-        for (const auto& method : cls.methods) {
-            if (method.attributes & METHOD_ATTRIBUTE_STATIC) {
-                staticMethodCount++;
-            }
-        }
-        std::string guard = "__" + SanitizeIdentifier(cls.name) + "_HPP__";
-        std::transform(guard.begin(), guard.end(), guard.begin(), ::toupper);
-        header << "// IL2CPP Generated Header\n";
-        header << "// Type: " << cls.namespaceName << "::" << cls.name << "\n";
-        header << "// Generated on: " << timestamp << "\n";
-        header << "// Fields: " << cls.fields.size() << "\n";
-        header << "// Methods: " << cls.methods.size() << "\n";
-        header << "// Static Methods: " << staticMethodCount << "\n\n";
 
+        std::ofstream header(headerPath);
+        if (!header.is_open()) return false;
+
+        std::string className = m_deobfuscator.DeobfuscateClass(cls.name);
+        std::string guard = "__" + SanitizeIdentifier(className) + "_HPP__";
+        std::transform(guard.begin(), guard.end(), guard.begin(), ::toupper);
+
+        header << "#pragma once\n";
+        header << "// Original IL2CPP Name: " << cls.name << "\n";
+        header << "// Deobfuscated Name: " << className << "\n\n";
         header << "#ifndef " << guard << "\n";
         header << "#define " << guard << "\n\n";
         header << "#include <cstdint>\n";
@@ -767,138 +825,47 @@ typedef struct Il2CppObject {
             header << "private:\n";
         }
         for (const auto& field : cls.fields) {
-            header << "    " << field.type << " " << SanitizeIdentifier(field.name) << ";";
-            if (field.attributes & FIELD_ATTRIBUTE_STATIC) {
-                header << " // static";
-            }
-            header << "\n";
+            std::string fieldName = m_deobfuscator.DeobfuscateField(field.name);
+            header << "    " << field.type << " " << SanitizeIdentifier(fieldName) << ";\n";
         }
 
         if (!cls.fields.empty() && !cls.methods.empty()) {
             header << "\n";
         }
         for (const auto& method : cls.methods) {
+            std::string methodName = m_deobfuscator.DeobfuscateMethod(method.name);
             header << "    " << method.returnType << " "
-                << SanitizeIdentifier(method.name) << "(";
-            if (!method.parameters.empty()) {
-                for (size_t i = 0; i < method.parameters.size(); ++i) {
-                    if (i != 0) header << ", ";
-                    header << method.parameters[i].type << " "
-                        << SanitizeIdentifier(method.parameters[i].name);
-                }
-            }
-
+                << SanitizeIdentifier(methodName) << "(";
             header << ");\n";
-
-            if (method.attributes & METHOD_ATTRIBUTE_VIRTUAL) {
-                header << "    virtual ~" << SanitizeIdentifier(cls.name) << "() {}\n";
-            }
         }
 
-        header << "};\n\n";
-        if (!cls.namespaceName.empty()) {
-            header << "} // namespace " << cls.namespaceName << "\n\n";
-        }
         header << "#endif // " << guard << "\n";
-
         header.close();
         return true;
     }
 
+
     bool GenerateClassSource(const ClassInfo& cls) {
-        std::string srcName = SanitizeIdentifier(cls.name) + ".cpp";
+        std::string className = m_deobfuscator.DeobfuscateClass(cls.name);
+        std::string srcName = className + ".cpp";
         std::string srcPath = m_outputPath + "src" + PATH_SEPARATOR + srcName;
+
         std::ofstream source(srcPath);
-        if (!source.is_open()) {
-            return false;
-        }
-        source << "#include \"../include/" << SanitizeIdentifier(cls.name) << ".hpp\"\n";
-        source << "#include \"../include/il2cpp/il2cpp-api.h\"\n";
-        source << "#include \"../include/il2cpp/il2cpp-class.h\"\n";
-        source << "#include \"../include/il2cpp/il2cpp-object-internals.h\"\n\n";
-        if (!cls.namespaceName.empty()) {
-            source << "using namespace " << cls.namespaceName << ";\n\n";
-        }
+        if (!source.is_open()) return false;
+
+        source << "#include \"../include/" << className << ".hpp\"\n";
+        source << "// Original IL2CPP Class Name: " << cls.name << "\n\n";
+
         for (const auto& method : cls.methods) {
-            if (method.attributes & METHOD_ATTRIBUTE_STATIC) {
-                source << method.returnType << " " << SanitizeIdentifier(cls.name) << "::"
-                    << SanitizeIdentifier(method.name) << "(";
-                if (!method.parameters.empty()) {
-                    for (size_t i = 0; i < method.parameters.size(); ++i) {
-                        if (i != 0) source << ", ";
-                        source << method.parameters[i].type << " "
-                            << SanitizeIdentifier(method.parameters[i].name);
-                    }
-                }
-
-                source << ") {\n";
-                source << "    // Static method implementation\n";
-                source << "    Il2CppClass* klass = il2cpp_class_from_name(\""
-                    << cls.namespaceName << "\", \"" << cls.name << "\");\n";
-                source << "    const MethodInfo* methodInfo = il2cpp_class_get_method_from_name(klass, \""
-                    << method.name << "\", " << method.parameters.size() << ");\n";
-
-                if (!method.parameters.empty()) {
-                    source << "    void* args[" << method.parameters.size() << "];\n";
-                    for (size_t i = 0; i < method.parameters.size(); i++) {
-                        source << "    args[" << i << "] = &" << SanitizeIdentifier(method.parameters[i].name) << ";\n";
-                    }
-                }
-
-                source << "    \n";
-                if (method.returnType != "void") {
-                    source << "    return ";
-                }
-                source << "il2cpp_runtime_invoke(methodInfo, nullptr, ";
-                if (!method.parameters.empty()) {
-                    source << "args";
-                }
-                else {
-                    source << "nullptr";
-                }
-                source << ", nullptr);\n";
-                source << "}\n\n";
-            }
-            else {
-                source << method.returnType << " " << SanitizeIdentifier(cls.name) << "::"
-                    << SanitizeIdentifier(method.name) << "(";
-                if (!method.parameters.empty()) {
-                    for (size_t i = 0; i < method.parameters.size(); ++i) {
-                        if (i != 0) source << ", ";
-                        source << method.parameters[i].type << " "
-                            << SanitizeIdentifier(method.parameters[i].name);
-                    }
-                }
-
-                source << ") {\n";
-                source << "    // Instance method implementation\n";
-                source << "    Il2CppClass* klass = il2cpp_class_from_name(\""
-                    << cls.namespaceName << "\", \"" << cls.name << "\");\n";
-                source << "    const MethodInfo* methodInfo = il2cpp_class_get_method_from_name(klass, \""
-                    << method.name << "\", " << method.parameters.size() << ");\n";
-
-                if (!method.parameters.empty()) {
-                    source << "    void* args[" << method.parameters.size() << "];\n";
-                    for (size_t i = 0; i < method.parameters.size(); i++) {
-                        source << "    args[" << i << "] = &" << SanitizeIdentifier(method.parameters[i].name) << ";\n";
-                    }
-                }
-
-                source << "    \n";
-                if (method.returnType != "void") {
-                    source << "    return ";
-                }
-                source << "il2cpp_runtime_invoke(methodInfo, this, ";
-                if (!method.parameters.empty()) {
-                    source << "args";
-                }
-                else {
-                    source << "nullptr";
-                }
-                source << ", nullptr);\n";
-                source << "}\n\n";
-            }
+            std::string methodName = m_deobfuscator.DeobfuscateMethod(method.name);
+            source << method.returnType << " " << className << "::"
+                << SanitizeIdentifier(methodName) << "(";
+            source << ") {\n";
+            source << "    const MethodInfo* methodInfo = il2cpp_class_get_method_from_name(klass, \""
+                << method.name << "\", " << method.parameters.size() << ");\n";
+            source << "}\n\n";
         }
+
         source.close();
         return true;
     }
